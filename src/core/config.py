@@ -1,10 +1,51 @@
 """Configuration loading and management."""
 
-from pathlib import Path
-from typing import Optional
 import os
+import re
+from pathlib import Path
+
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+_ENV_VAR_PATTERN = re.compile(r"^\$\{(\w+)\}$")
+
+
+def _resolve_env(value: str | None) -> str | None:
+    """Resolve a ${VAR_NAME} reference to its environment variable value."""
+    if not value:
+        return value
+    m = _ENV_VAR_PATTERN.match(value)
+    if m:
+        return os.environ.get(m.group(1))
+    return value
+
+
+def parse_interval(interval_str: str) -> int:
+    """Parse interval string like '10m', '6h', '30s' to seconds.
+
+    Raises ValueError with a descriptive message on invalid or non-positive input.
+    """
+    s = interval_str.strip()
+    try:
+        if s.endswith("m"):
+            result = int(s[:-1]) * 60
+        elif s.endswith("h"):
+            result = int(s[:-1]) * 3600
+        elif s.endswith("s"):
+            result = int(s[:-1])
+        else:
+            result = int(s)
+    except (ValueError, IndexError):
+        raise ValueError(
+            f"Invalid interval '{interval_str}'. "
+            "Use a number followed by 's', 'm', or 'h' (e.g. '30s', '10m', '2h')."
+        )
+    if result <= 0:
+        raise ValueError(
+            f"Interval must be positive, got '{interval_str}' ({result}s)."
+        )
+    return result
 
 
 class ProjectConfig(BaseModel):
@@ -15,22 +56,40 @@ class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-4o"
     temperature: float = 0.3
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
+    api_key: str | None = None
+    base_url: str | None = None
 
-    def get_api_key(self) -> Optional[str]:
-        if self.api_key and self.api_key.startswith("${"):
-            return os.environ.get(self.api_key[2:-1])
-        return self.api_key
+    def get_api_key(self) -> str | None:
+        return _resolve_env(self.api_key)
 
-    def get_base_url(self) -> Optional[str]:
-        if self.base_url and self.base_url.startswith("${"):
-            return os.environ.get(self.base_url[2:-1])
-        return self.base_url
+    def get_base_url(self) -> str | None:
+        return _resolve_env(self.base_url)
 
 
 class HeartbeatConfig(BaseModel):
     interval: str = "30m"
+    short_term_days: int = 3
+    max_consecutive_errors: int = 5
+
+    @field_validator("interval")
+    @classmethod
+    def validate_interval(cls, v: str) -> str:
+        parse_interval(v)
+        return v
+
+    @field_validator("short_term_days")
+    @classmethod
+    def validate_short_term_days(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("short_term_days must be at least 1")
+        return v
+
+    @field_validator("max_consecutive_errors")
+    @classmethod
+    def validate_max_consecutive_errors(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_consecutive_errors must be at least 1")
+        return v
 
 
 class BoundaryConfig(BaseModel):

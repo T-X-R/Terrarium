@@ -1,5 +1,6 @@
 """Terrarium Agent — loads all skill knowledge at boot, then acts."""
 
+import functools
 from pathlib import Path
 
 from src.core.config import TerrariumConfig
@@ -18,9 +19,7 @@ def _extract_summary(content: str) -> str:
 
 def get_skill_names() -> list[str]:
     """Return sorted list of available skill names."""
-    return sorted(
-        p.parent.name for p in SKILLS_DIR.glob("*/SKILL.md")
-    )
+    return sorted(p.parent.name for p in SKILLS_DIR.glob("*/SKILL.md"))
 
 
 def get_skill_content(name: str) -> str | None:
@@ -31,8 +30,14 @@ def get_skill_content(name: str) -> str | None:
     return skill_file.read_text().strip()
 
 
+@functools.lru_cache(maxsize=1)
 def _load_skills() -> str:
-    """Build a skill index: name + one-line summary for each skill."""
+    """Build a skill index: name + one-line summary for each skill.
+
+    Cached with ``lru_cache(maxsize=1)`` so tests can call
+    ``_load_skills.cache_clear()`` for isolation while production code
+    still avoids redundant filesystem I/O.
+    """
     lines = []
     for skill_file in sorted(SKILLS_DIR.glob("*/SKILL.md")):
         name = skill_file.parent.name
@@ -56,18 +61,16 @@ def _load_identity(project_path: Path) -> str:
     return f"## Project Identity\n\n{content}" if content else ""
 
 
-def _load_long_term_memory(project_path: Path) -> str:
-    mem_file = project_path / ".terrarium" / "memory" / "MEMORY.md"
-    if not mem_file.exists():
-        return ""
-    content = mem_file.read_text().strip()
-    return f"## Long-Term Memory\n\n{content}" if content else ""
-
-
 def _build_system_prompt(config: TerrariumConfig, project_path: Path) -> str:
+    """Build the static system prompt (skills, identity, drives, boundaries).
+
+    Long-term memory is intentionally excluded — it is injected per-heartbeat
+    into the user message so the agent always sees the latest state without
+    requiring system-prompt or agent recreation.
+    """
     project_name = config.project.name
     parts = [
-        f"You are Terrarium — the cognitive core of the project \"{project_name}\".",
+        f'You are Terrarium — the cognitive core of the project "{project_name}".',
         "You run on a heartbeat. Each time you wake up, you perceive the project's current state, "
         "identify what needs improvement, and act on it. You can read files, edit files, create "
         "files, list files, run commands, and log notes to memory.\n"
@@ -84,7 +87,9 @@ def _build_system_prompt(config: TerrariumConfig, project_path: Path) -> str:
         drive_lines = "\n".join(
             f"- **{d.name}**: {d.description}" for d in config.drives
         )
-        parts.append(f"## Drives\n\nThese internal tensions motivate your actions:\n\n{drive_lines}")
+        parts.append(
+            f"## Drives\n\nThese internal tensions motivate your actions:\n\n{drive_lines}"
+        )
 
     readonly = config.boundaries.readonly
     writable = config.boundaries.writable
@@ -98,25 +103,12 @@ def _build_system_prompt(config: TerrariumConfig, project_path: Path) -> str:
     if skills:
         parts.append(skills)
 
-    long_mem = _load_long_term_memory(project_path)
-    if long_mem:
-        parts.append(long_mem)
-
     return "\n\n---\n\n".join(parts)
 
 
-def create_terrarium_agent(config: TerrariumConfig, project_path: Path):
-    """Create a Terrarium agent with all skills and tools ready.
-
-    Returns the agent object ready to be invoked with
-    agent.invoke({"messages": [{"role": "user", "content": "..."}]}).
-    """
-    from langchain.agents import create_agent
+def create_model(config: TerrariumConfig):
+    """Create an LLM instance from config. Reuse this across heartbeats."""
     from langchain.chat_models import init_chat_model
-
-    from src.core.tools import ALL_TOOLS, init_tools
-
-    init_tools(project_path, config)
 
     model_kwargs: dict = {
         "temperature": config.llm.temperature,
@@ -128,12 +120,36 @@ def create_terrarium_agent(config: TerrariumConfig, project_path: Path):
     if base_url:
         model_kwargs["base_url"] = base_url
 
-    model = init_chat_model(config.llm.model, **model_kwargs)
+    return init_chat_model(config.llm.model, **model_kwargs)
+
+
+def create_terrarium_agent(config: TerrariumConfig, project_path: Path, *, model=None):
+    """Create a Terrarium agent with all skills and tools ready.
+
+    Pass a pre-built *model* to avoid re-initialising the LLM client on every
+    heartbeat tick.  When *model* is ``None`` a fresh one is created from config.
+
+    The agent is designed to be created once and invoked repeatedly — the system
+    prompt contains only static content (skills, identity, drives, boundaries).
+    Dynamic content (memory) is passed per-invocation in the user message.
+
+    Returns the agent object ready to be invoked with
+    agent.invoke({"messages": [{"role": "user", "content": "..."}]}).
+    """
+    from langchain.agents import create_agent
+
+    from src.core.tools import create_tools
+
+    tools = create_tools(project_path, config)
+
+    if model is None:
+        model = create_model(config)
+
     system_prompt = _build_system_prompt(config, project_path)
 
     agent = create_agent(
         model,
         system_prompt=system_prompt,
-        tools=ALL_TOOLS,
+        tools=tools,
     )
     return agent

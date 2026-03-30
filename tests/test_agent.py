@@ -1,15 +1,15 @@
 """Tests for agent prompt-building functions (no LLM calls)."""
 
-from pathlib import Path
-
 from src.core.agent import (
-    _extract_summary, _load_skills, get_skill_names, get_skill_content,
-    _load_identity, _load_long_term_memory, _build_system_prompt,
+    _build_system_prompt,
+    _extract_summary,
+    _load_identity,
+    _load_skills,
+    get_skill_content,
+    get_skill_names,
 )
-from src.core.config import TerrariumConfig, DriveConfig
-
-
-# --- _extract_summary ---
+from src.core.config import DriveConfig, TerrariumConfig
+from src.core.memory import load_long_term_memory
 
 
 class TestExtractSummary:
@@ -28,9 +28,6 @@ class TestExtractSummary:
         assert _extract_summary("# Title\n## Subtitle") == ""
 
 
-# --- _load_skills (index mode) ---
-
-
 class TestLoadSkills:
     def test_returns_index_not_full_content(self):
         result = _load_skills()
@@ -46,9 +43,6 @@ class TestLoadSkills:
         assert "## 评估方式" not in result
 
 
-# --- get_skill_content ---
-
-
 class TestGetSkillContent:
     def test_existing_skill(self):
         content = get_skill_content("perception")
@@ -57,9 +51,6 @@ class TestGetSkillContent:
 
     def test_nonexistent_skill(self):
         assert get_skill_content("nonexistent_skill") is None
-
-
-# --- _load_identity ---
 
 
 class TestLoadIdentity:
@@ -83,30 +74,24 @@ class TestLoadIdentity:
         assert "I value simplicity" in result
 
 
-# --- _load_long_term_memory ---
-
-
 class TestLoadLongTermMemory:
     def test_returns_empty_when_no_file(self, tmp_path):
-        assert _load_long_term_memory(tmp_path) == ""
+        assert load_long_term_memory(tmp_path) == ""
 
     def test_returns_empty_when_file_is_empty(self, tmp_path):
         mem_file = tmp_path / ".terrarium" / "memory" / "MEMORY.md"
         mem_file.parent.mkdir(parents=True)
         mem_file.write_text("   \n  ")
-        assert _load_long_term_memory(tmp_path) == ""
+        assert load_long_term_memory(tmp_path) == ""
 
     def test_loads_memory(self, tmp_path):
         mem_file = tmp_path / ".terrarium" / "memory" / "MEMORY.md"
         mem_file.parent.mkdir(parents=True)
         mem_file.write_text("# Long-Term Memory\n\n- always run tests")
 
-        result = _load_long_term_memory(tmp_path)
+        result = load_long_term_memory(tmp_path)
         assert "## Long-Term Memory" in result
         assert "always run tests" in result
-
-
-# --- _build_system_prompt ---
 
 
 class TestBuildSystemPrompt:
@@ -121,10 +106,12 @@ class TestBuildSystemPrompt:
         assert "HEARTBEAT_OK" in prompt
 
     def test_includes_drives(self, tmp_path):
-        config = TerrariumConfig(drives=[
-            DriveConfig(name="stability", description="tests must pass"),
-            DriveConfig(name="clarity", description="code should be readable"),
-        ])
+        config = TerrariumConfig(
+            drives=[
+                DriveConfig(name="stability", description="tests must pass"),
+                DriveConfig(name="clarity", description="code should be readable"),
+            ]
+        )
         prompt = _build_system_prompt(config, tmp_path)
         assert "stability" in prompt
         assert "tests must pass" in prompt
@@ -145,14 +132,15 @@ class TestBuildSystemPrompt:
         prompt = _build_system_prompt(config, tmp_path)
         assert "I am a web app" in prompt
 
-    def test_includes_long_term_memory_when_present(self, tmp_path):
+    def test_system_prompt_excludes_long_term_memory(self, tmp_path):
         mem_file = tmp_path / ".terrarium" / "memory" / "MEMORY.md"
         mem_file.parent.mkdir(parents=True)
-        mem_file.write_text("- never skip tests")
+        mem_file.write_text("- LTM_EXCLUSION_MARKER_XQ9Z")
 
         config = TerrariumConfig()
         prompt = _build_system_prompt(config, tmp_path)
-        assert "never skip tests" in prompt
+        assert "LTM_EXCLUSION_MARKER_XQ9Z" not in prompt
+        assert "## Long-Term Memory" not in prompt
 
     def test_no_drives_section_when_empty(self, tmp_path):
         config = TerrariumConfig(drives=[])
