@@ -1,27 +1,20 @@
-# Perception Skill
+# Perception
 
-感知项目当前状态，收集文件结构、Git 变更等信息。
+你能感知项目的当前状态。在每次心跳时，先做感知，再决定是否需要行动。
 
-## 能力
+## 感知方式
 
-- 扫描项目文件结构
-- 获取 Git 仓库状态
-- 统计文件类型分布
+- 用 `run_command("git status")` 了解未提交的变更
+- 用 `run_command("git log --oneline -10")` 了解最近提交历史
+- 用 `run_command("find . -name '*.py' | grep -v __pycache__ | grep -v .venv | wc -l")` 了解代码规模
+- 用 `read_file` 查看关键文件内容（如 README、主入口文件）
+- 用 `run_command("pytest --tb=short -q 2>&1 | tail -20")` 了解测试状态
+- 用 `run_command("ruff check . 2>&1 | tail -20")` 了解代码质量
 
-## 触发条件
+## 关注信号
 
-- 当需要了解项目当前状态时
-- 当用户询问项目健康度时
-- 心跳触发时
-
-## 可用脚本
-
-- `scripts/scan_files.py` - 扫描项目文件，返回文件统计
-- `scripts/git_status.py` - 获取 Git 状态
-
-## 输出格式
-
-返回 ProjectState 对象，包含：
-- files: 文件统计
-- git: Git 状态
-- timestamp: 感知时间
+- 有大量未提交改动 → 可能需要整理
+- 测试失败 → 需要修复
+- Lint 警告增多 → 需要清理
+- TODO / FIXME 注释 → 待完成的工作
+- 文档缺失 → 需要补充
